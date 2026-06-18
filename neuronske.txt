@@ -1,0 +1,117 @@
+# potrebni importi 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import shapiro
+from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_score, recall_score, f1_score
+
+
+# Učitavamo podatke (navodimo koje vrednosti ćemo smatrati nedostajućim: '-', ' ', '')
+df = pd.read_csv("data/breast_cancer.csv", na_values=['-', ' ', ''])
+
+display(df.head())
+df.info()
+
+# Proveravamo da li varijable imaju nedostajuće vrednosti
+print(df.isna().sum())
+# Varijable mean radius i mean texture imaju po 2 nedostajuće vrednosti
+# Varijable `mean radius` i `mean texture` su numeričkog tipa i imaju mali broj nedostajućih vrednosti. Zbog toga ćemo koristiti metod zamene prosečnom vrednošću (`mean` i `median`). Da bismo odlučili da li da koristimo mean ili median, prvo ćemo proveriti raspodelu ovih varijabli pomoću Shapiro-Wilk testa. Ako varijable imaju normalnu raspodelu, nedostajuće vrednosti ćemo zameniti mean-om, a ako nemaju normalnu raspodelu, koristićemo median.
+
+# Proveravamo da li varijable imaju normalnu raspodelu
+p_radius = shapiro(df['mean radius'].dropna())[1]
+p_texture = shapiro(df['mean texture'].dropna())[1]
+
+print("p-vrednost za mean radius:", p_radius)
+print("p-vrednost za mean texture:", p_texture)
+
+# Obe varijable imaju vrednost p < 0.05 što znači da nemaju normalnu raspodelu i nedostajuće vrednosti zamenićemo medijanom
+
+median_radius = df['mean radius'].median()
+print(median_radius)
+median_texture = df['mean texture'].median()
+print(median_texture)
+# Dobili smo da su medijane 13.37 i 18.87 za mean radius i mean texture respektivno
+
+# Zamena nedostajućih vrednosti medijanama
+df['mean radius'] = df['mean radius'].fillna(median_radius)
+df['mean texture'] = df['mean texture'].fillna(median_texture)
+
+print(df.isna().sum())
+# Nema više nedostajućih vrednosti
+
+# Delimo podatke na trening (80%) i test (20%) skup
+
+X = df.drop(columns='isBenign')
+y = df['isBenign']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+# Standardizujemo varijable
+scaler=StandardScaler()
+X_train=scaler.fit_transform(X_train)
+X_test=scaler.transform(X_test)
+
+# Kreiranje neuronske mreže
+mlp1=MLPClassifier(hidden_layer_sizes=(64,32), max_iter=1000, random_state=42, solver='sgd')
+
+# Arhitektura kreirane neuronske mreže je **30–64–32–1**.
+# - Ulazni sloj sadrži **30 neurona**.
+# - Mreža ima **dva skrivena sloja**:
+#     - prvi skriveni sloj sadrži **64 neurona**,
+#     - drugi skriveni sloj sadrži **32 neurona**.
+#  - Izlazni sloj sadrži **1 neuron**.
+
+# Trening neuronske mreže
+mlp1.fit(X_train, y_train)
+
+# Tokom treninga neuronske mreže izvršavaju se sledeći koraci:
+# 1. **Forward propagation** - ulazni podaci prolaze kroz mrežu i izračunava se predikcija modela.
+# 2. **Računanje greške (loss)** - predikcije modela porede se sa stvarnim vrednostima i izračunava se greška modela.
+# 3. **Backward propagation** - na osnovu izračunate greške određuje se kako svaki parametar mreže utiče na grešku.
+# 4. **Ažuriranje parametara** - težine i bias vrednosti mreže ažuriraju se pomoću optimizacionog algoritma sa ciljem smanjenja greške modela.
+# Ovaj proces se ponavlja kroz više epoha, pri čemu jedna epoha predstavlja jedan prolazak kroz ceo trening skup podataka.
+
+# Prikaz promene vrednosti funkcije greške tokom treninga
+plt.figure()
+plt.plot(mlp1.loss_curve_)
+plt.xlabel("Iteracija")
+plt.ylabel("Loss")
+plt.grid()
+plt.show()
+
+y_pred=mlp1.predict(X_test)
+
+# MATRICA KONFUZIJE 
+cm = confusion_matrix(y_test, y_pred)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['malignant','benign'])
+disp.plot()
+plt.show()
+
+# Na glavnoj dijagonali matrice (41 i 70) nalaze se tačne predikcije, dok se na sporednoj dijagonali (2 i 1) nalaze pogrešne predikcije.
+
+# Evaluacione metrike
+# 4 metrike koje se najčešće koriste za procenu uspešnosti klasifikatora su:
+# - **Accuracy (tačnost)** – procenat tačnih predikcija (i pozitivnih i negativnih) u odnosu na sve observacije
+# - **Precision (preciznost)** – procenat observacija za koje smo predvideli da su pozitivne i koje zaista jesu pozitivne
+# - **Recall (odziv)** – procenat observacija koje su stvarno pozitivne i koje smo mi tačno predvideli kao pozitivne
+# - **F1 score** – mera za balansiranje vrednosti precision-a i recall-a
+
+def izracunaj_cetiri_metrike(y_true, y_pred):
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, pos_label=0)
+    recall = recall_score(y_true, y_pred, pos_label=0)
+    f1 = f1_score(y_true, y_pred, pos_label=0)
+    return {
+        'accuracy': accuracy,
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1': float(f1)
+    }
+
+rezzz=izracunaj_cetiri_metrike(y_test, y_pred)
+print(rezzz)
+

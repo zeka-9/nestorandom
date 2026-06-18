@@ -1,0 +1,191 @@
+# svi potrebni importi 
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Ucitavam detaset
+df = pd.read_csv('data/bank.csv', na_values=['-', ' ', ''])
+
+display(df.head())
+df.info()
+
+# Kreiranje varijable Stayed na osnovu vrednosti varijable Exited
+#Provera da li ima NA u Exited
+print("Exited ima NA vrednosti:", df['Exited'].isna().any())
+df['Stayed'] = np.where(df['Exited'] == 0, 'Yes', 'No')   # pozitivna klasa je Yes
+#Izlazna varijabla se prebacuje u 1 i 0 zato što DecisionTreeClassifier iz scikit-learn biblioteke radi samo sa numeričkim tipovima podataka
+df['Stayed'] = df['Stayed'].map({'Yes': 1, 'No': 0})
+
+#Uklanjanje varijable Exited jer je korišćena za kreiranje izlazne varijable
+df.drop(columns='Exited', inplace=True)
+
+
+#Kreiranje podskupa
+#Zamena nedostajućih vrednosti
+print(df['Age'].isna().sum())
+df['Age'].fillna(df['Age'].median())
+
+df = df[df['Age'] <= 87]
+print(df['Age'].describe())
+
+# Zamena nedostajućih vrednosti
+print("Neodostajuće vrednosti:\n", df.isna().sum())
+#Varijable Surname i Geography imaju nedostajuće vrednosti
+#Varijablu Surname ćemo kasnije izbaciti, jer nije relevantna za predviđanje izlazne varijable
+
+#Nedostajuće vrednosti varijable Geography zamenjujemo sa najčešćom vrednošću
+df['Geography'] = df['Geography'].fillna(df['Geography'].mode()[0])
+df.Geography.isna().sum()
+
+df.info()   # gledamo tipove vrednosti 
+
+#Varijabla surname se uklanja jer nije značajna za procenu odliva klijenta
+df = df.drop(columns=['Surname'])
+
+plt.figure(figsize=(6,4))
+sns.kdeplot(data=df, x='CreditScore', hue='Stayed', fill=True, alpha=0.55)
+plt.tight_layout()
+plt.show()
+
+#Ne treba zadržati CreditScore jer se raspodele za varijablu Stayed (Yes/No) gotovo potpuno preklapaju i atribut ne doprinosi razdvajanju klasa.
+df.drop(columns=['CreditScore'], inplace=True)
+
+plt.figure(figsize=(6,4))
+sns.kdeplot(data=df, x='Age', hue='Stayed', fill=True, alpha=0.55)
+plt.tight_layout()
+plt.show()
+# Na grafiku se može videti da se vrednosti varijable Age razlikuju u pogledu izlazne varijable. Varijabla Age će se uključiti u model
+
+# COUNTPLOT --> za ocene, za 0/1, binarne, yes/no itd 
+plt.figure(figsize=(6,4))
+sns.countplot(data=df, x='IsActiveMember', hue='Stayed', palette='pastel')
+plt.xlabel('IsActiveMember')
+plt.ylabel('Broj klijenata')
+plt.legend(title='Stayed')
+plt.tight_layout()
+plt.show()
+#Na grafiku se može videti da se proporcije klijenata sa IsActiveMember=0 i IsActiveMember=1 razlikuju u odnosu na izlaznu promenljivu, pa će varijabla IsActiveMember biti uključena u model.
+
+# I TAKO REDOM ZA SVE KOLONE ODRADIM I PROCENIM 
+
+
+df.select_dtypes(include=object).info()
+
+#Druge karakter varijable se procenjuju na osnovu njihovog tipa (numericka ili kategorička), broja različitih vrednosti i raspodele vrednosti
+df_vars = df.select_dtypes(include=object).columns.tolist()
+for df_var in df_vars:
+    print(f"{df_var}: {df[df_var].nunique()}")
+#Obe varijable imaju mali broj različitih vrednosti
+
+
+df['Geography'].value_counts()
+df['Gender'].value_counts() 
+
+
+from sklearn.preprocessing import OneHotEncoder
+
+#S obzirom da su varijable Geography i Gender kategoričke, koristi se One-Hot Encoding
+ohe = OneHotEncoder(sparse_output=False, drop='first')
+cats = ['Geography', 'Gender']
+encoded_array = ohe.fit_transform(df[cats])
+encoded_cols = ohe.get_feature_names_out(cats)
+
+df_ohe = pd.DataFrame(encoded_array, columns=encoded_cols, index=df.index)
+df = df.drop(columns=cats).join(df_ohe)
+
+df.head()
+
+# Podela podataka na train i test dataset
+X = df.drop(columns='Stayed')  # ona nova koju smo napravili na samom pocetku od Exited 
+y = df['Stayed']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# Raspodela klasa u trening i test skupu
+print(y_train.value_counts(normalize=True))
+print(y_test.value_counts(normalize=True))
+
+
+# Racunamo optimalnu vrednost parametra ccp_alpha
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import GridSearchCV,StratifiedKFold
+
+cv  = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+param_grid = {'ccp_alpha':np.arange(0.0,0.05,0.0025)}
+grid = GridSearchCV(DecisionTreeClassifier(random_state=42),
+                    param_grid=param_grid,
+                    cv=cv,
+                    scoring='accuracy')
+grid.fit(X_train, y_train)
+
+best_ccp_alpha = grid.best_params_['ccp_alpha']
+print("Najbolja vrednost ccp_alpha:",best_ccp_alpha)
+
+
+# KREIRANJE MODELA STABLA ODLUCIVANJA 
+tree = DecisionTreeClassifier(ccp_alpha=best_ccp_alpha,random_state=42)
+tree.fit(X_train, y_train)
+
+# ISCRTAVAMO STABLO ODLUCIVANJA 
+plt.figure(figsize=[30,10])
+plot_tree(tree,
+          feature_names=X_train.columns,
+          class_names=['No','Yes'],
+          filled=True,
+          rounded=True,
+          fontsize=10)
+plt.title("Stablo odlucivanja:::: ")
+plt.show()
+
+# Kreiranje predikcije za test skup za tree
+y_pred = tree.predict(X_test)
+
+
+# MATRICA KONFUZIJE 
+cm = confusion_matrix(y_test, y_pred)
+print("Matrica kofuzije:")
+print(cm)
+
+# Kreiraj DataFrame sa oznakama redova i kolona
+cm_df = pd.DataFrame(cm,
+                       index = ['Stvarno:No','Stvarno:Yes'],
+                       columns = ['Predviđeno:No','Predviđeno:Yes'])
+print(cm_df)
+
+
+# :::::: 4 metrike:::::: 
+#4 metrike se koriste za evaluaciju performansi klasifikacionog modela:
+#    Accuracy (tačnost) - procenat tačnih predikcija (i pozitivnih i negativnih);
+#    Precision (preciznost) - procenat tačno predviđenih pozitivnih predikcija u odnosu na sve pozitivne predikcije koje je model napravio;
+#    Recall (odziv) - procenat pozitivnih predikcija koje je model tačno identifikovao kao pozitivne u odnosu na ukupan broj stvarno pozitivnih;
+#    F1 - mera za balansiranje vrednosti precision-a i recall-a.
+
+def izracunaj_cetiri_metrike(cm, model_name=""):
+
+    from pandas import Series
+
+    TP = cm[1,1]
+    TN = cm[0,0]
+    FP = cm[0,1]
+    FN = cm[1,0]
+
+    accuracy = (TP + TN)/cm.sum()
+    precision = TP/(TP + FP)
+    recall = TP/(TP + FN)
+    F1 = 2*precision*recall/(precision + recall)
+
+    return Series(data=[accuracy, precision, recall, F1],
+                  index=['accuracy', 'precision', 'recall', 'F1'],
+                  name=model_name)
+
+
+
+rezzz = izracunaj_cetiri_metrike(cm, 'tree1')
+rezzz
+
+

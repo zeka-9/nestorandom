@@ -1,0 +1,185 @@
+# POTREBNI IMPORTI 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import sklearn.cluster as cluster
+
+# UCITAVAM DATASET 
+data = pd.read_csv('./data/spotify.csv')
+
+# PRAVIM TRAZENI PODSKUP 
+cl_data = data[data["speechiness"] <= 60].copy()
+
+# GLEDAM SVE PODATKE 
+cl_data
+
+
+# BIRAMO PROMENLJIVE ZA KLASTERIZACIJU 
+cl_data.info()   # GLEADAM TIP SVIH PROM 
+# Promenljiva in_spotify_charts je tipa object, a treba da bude broj 
+
+cl_data.describe()   
+# instrumentalness uglavnom sadrži nule (sve do 75 kvartila) --> IZBACUJEMO 
+# i   released_year NAM ISTO NE TREBA, NEVAZNO JE 
+
+
+# mode - nije numerička, već kategorijska promenljiva. Pošto ima samo dve vrednosti (Major i Minor)
+# transformisaćemo je u binarnu (numeričku) varijablu mapiranjem u sledećem koraku (npr. 0 - Major,
+# 1 - Minor) i upotrebićemo je u klasterizaciji - nećemo je izbaciti.
+
+cl_data.drop(columns = ["track_name", "instrumentalness"], inplace = True)
+
+# SREDJUJEMO NA VREDNOSTI ::: 
+cl_data["in_spotify_charts"] = pd.to_numeric(cl_data["in_spotify_charts"], errors='coerce')
+
+cl_data.info()  # GLEDAM DA LI SAM USPESNO PREBACILA U NUMERIC
+
+cl_data["mode"] = cl_data["mode"].map({'Major': 0, 'Minor': 1})
+cl_data.info()  # GLEDAM DA LI SAM JE USPESNO MAPIRALA 
+
+print(cl_data.isna().sum())   # PO KOLONAMA GLEDAM NA VREDNOSTI 
+cl_data.describe()
+
+# 2 VARIJABLE IMAJU PO 2 NA VREDNOSTI, PA IH IZBACUJEM 
+cl_data.dropna(inplace = True)
+print(cl_data.isna().sum())  # PROVERA NAKON IZBACIVANJA 
+cl_data.info()
+
+# MATRICA KORELACIJE 
+import seaborn as sb
+
+plt.figure(figsize=(8,6))
+sb.heatmap(cl_data.corr(), cmap="Reds",annot=True)  # Blues 
+plt.show()
+
+# TRI PROMENLJIVE SU MI VISOKO KORELISANE MEDJUSOBNO, PA (bilo koje) 2 IZBACUJEM: 
+cl_data.drop(columns = ["in_apple_playlists", "streams"], inplace = True)
+cl_data
+
+# AUTLAJERIII: 
+# Ako IMA puno outlier-a (preko 10%) - izbacujemo celu kolonu
+# Ako NEMA puno outlier-a -  winsorize 
+
+def draw_boxplot(podaci, naslov):      # FJA KOJA CRTA I PRIKAZUJE BOXPLOT
+    plt.boxplot(podaci)
+    plt.xlabel(naslov)
+    plt.show()
+
+
+from scipy.stats.mstats import winsorize
+
+#Tražimo sad redom outliere,  redom po kolonama: 
+cl_data.columns
+
+# PRVA:  "in_spotify_playlists"
+draw_boxplot(cl_data["in_spotify_playlists"], "in_spotify_playlists")
+
+# ima outliere samo na gornjoj granici, winsorize u rasponu 0 - 90 ne otklanja sve outlier-e
+winsorized_data = winsorize(cl_data["in_spotify_playlists"], limits=[0.00, 0.10])
+draw_boxplot(winsorized_data, "Winsorized in_spotify_playlists")
+plt.show()
+
+#Zaključak je da više od 10% vrednosti ove promenljive čine outlier-i i treba je izbaciti iz dataset-a
+cl_data.drop(columns = ["in_spotify_playlists"], inplace = True)
+
+# Gledam da li je iznad ili ispod i na osnovu toga pisem 0.10 ili 0.00 
+# I ako mi NE NESTANU SA 0.10 —> izbacujem jer to znaci da ih ima preko 10% 
+# A ako nestanu, onda logicno smanjujem jer je bolje da bude sto manje
+
+# .......... sve trenutno postojece kolone predjem 
+# OVAKO IZBACUJEM:  cl_data.drop(columns = ["in_apple_charts"], inplace = True)
+
+
+cl_data.describe()
+cl_data.columns
+cl_data.info()
+
+# SKALIRANJE (NORMALIZACIJA NA SKALU 0-1) 
+from sklearn.preprocessing import MinMaxScaler
+temp_data = MinMaxScaler().fit_transform(cl_data)         # Koristimo MinMaxScaler koji vraća numpy array koji pretvaramo nazad u DataFrame
+cl_data_scaled = pd.DataFrame(temp_data, columns = cl_data.columns)
+
+cl_data_scaled.describe()   # PROVERAVAMO DA LI JE SVE OK SKALIRANO 
+
+# do ovde je isto za kmeans i hijerarh. 
+
+
+# PREKO DENDROGRAMA TRAZIMO NAJBOLJU VREDNOST ZA BROJ KLASTERA K I LINKAGE METODU 
+from scipy.cluster.hierarchy import linkage, dendrogram
+
+# Dendrogram za razlivite linkage metode
+dendrogram(linkage(cl_data_scaled, method='ward', metric='euclidean'))
+plt.title("Ward linkage dendrogram")
+plt.show()
+
+dendrogram(linkage(cl_data_scaled, method='single', metric='euclidean'))
+plt.title("Single linkage dendrogram")
+plt.show()
+
+dendrogram(linkage(cl_data_scaled, method='complete', metric='euclidean'))
+plt.title("Complete linkage dendrogram")
+plt.show()
+
+dendrogram(linkage(cl_data_scaled, method='average', metric='euclidean'))
+plt.title("Average linkage dendrogram")
+plt.show()
+
+# AKO IZABEREM: 
+# COMPLETE ILI AVERAGE LINKADE METODE --> dobija se po 4 klastera koji su dosta bliski jedan drugom (visine na dendrogramu nisu mnogo velike). 
+# SINGLE I WARD --> dobijaju se po dva odvojena klastera,
+# WARD --> moze podela na 4 klastera (razlika u visini između 2 i 4 klastera nije velika). 
+# Najprakticniji je WARD 
+
+# RADIMO HIJEJR. KLAST. SA 2 KLASTERA SA WARD METODOM // euklidska udaljenost
+h_cluster = cluster.AgglomerativeClustering(n_clusters=2, linkage = "ward", metric="euclidean").fit(cl_data_scaled)
+cl_data_scaled["cluster"] = h_cluster.labels_    # DODAJEMO OVU KOLONU U DATASET 
+
+cl_data_scaled   # DA ISPISEM 
+
+
+# CRTAM I UPOREDNE BOXPLOTOVE ZA 2 KLASTERA DA IH UPOREDIM 
+fig, ax = plt.subplots(1,2)
+
+ax[0].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==0].drop(columns = ["cluster"]), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0].set_xlabel("Klaster 1")
+ax[1].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==1].drop(columns = ["cluster"]), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1].set_xlabel("Klaster 2")
+
+plt.show()
+
+print("PRVI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==0, "cluster"].count())
+print("DRUGI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==1, "cluster"].count())
+
+# RADIM PONOVO KLASTERIZACIJU ALI SAD SA 4 KLASTERA, ZA K=4, NAD ISTIM DF --> PA IZBACUJEMO KOLONU cluster DA NE OMETA 
+cl_data_scaled.drop(columns = ["cluster"], inplace=True)
+
+# Radimo hijerarhijsku klasterizaciju sa četiri klastera i Ward linkage metodom, euklidska udaljenost
+h_cluster = cluster.AgglomerativeClustering(n_clusters=4, linkage = "ward", metric="euclidean").fit(cl_data_scaled)
+
+cl_data_scaled["cluster"] = h_cluster.labels_     # DODAJEM NOVU KOLONU
+cl_data_scaled
+
+fig, ax = plt.subplots(2, 2)
+
+ax[0, 0].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 0].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0, 0].set_xlabel("Klaster 1")
+
+ax[0, 1].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 1].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0, 1].set_xlabel("Klaster 2")
+
+ax[1, 0].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 2].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1, 0].set_xlabel("Klaster 3")
+
+ax[1, 1].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 3].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1, 1].set_xlabel("Klaster 4")
+
+plt.show()
+
+print("PRVI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 0, "cluster"].count())
+print("DRUGI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 1, "cluster"].count())
+print("TRECI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 2, "cluster"].count())
+print("CETVRTI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 3, "cluster"].count())

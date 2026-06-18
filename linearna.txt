@@ -1,0 +1,181 @@
+# svi potrebni importi
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sb
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from sklearn.model_selection import train_test_split
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from scipy.stats import shapiro
+
+# Ucitavam iz dataseta 
+data = pd.read_csv(".venv" / "data" 'fastfood.csv', na_values=['NA'])
+
+display(data.head())
+print(data.info())
+
+# Proveravam NA vrednosti 
+data.isna().sum()
+
+# Podskup sa total_fat ≤ 125
+data_subset = data.loc[data['total_fat'] <= 125].copy()
+
+print(f"Br redova u originalu: {len(data)}")
+print(f"Br redova u podskupu: {len(data_subset)}")
+
+#    loc je Pandas metoda koja služi za selektovanje
+nedostajuceVrednosti = ['-', ' ', '']
+# Proveravam koje kolone poseduju specijalne karaktere
+data_subset.isin(nedostajuceVrednosti).sum()
+
+# Zamenimo specijalne karaktere
+data_subset.replace(nedostajuceVrednosti, np.nan, inplace=True)
+
+# Ponovna provera da li je ostalo nest od specijanlih karaktera
+print(data_subset.isin(nedostajuceVrednosti).sum())
+
+# SAD GLEDAM STA MI SE UCITALO KAO OBJECT ODNOSNO STRING 
+# Kad su po prirodi NEnumericke, onda ih ostavljam tako, a u surpotnom izbacujem i gledam ko ima NA vrednosti
+
+# fiber, protein i calcium poseduju NA vrednosti 
+# Pretvaramo cal_fat i protein u numeričke (jer su trenutno object)
+data_subset['protein'] = pd.to_numeric(data_subset['protein'], errors='coerce')
+data_subset['cal_fat'] = pd.to_numeric(data_subset['cal_fat'], errors='coerce')
+
+# Pravimo subset, samo numerički podaci   ************
+data_numeric = data_subset.select_dtypes(include=['number']).copy()
+
+print(data_numeric.info())
+data_numeric.columns
+
+
+# Gledamo ko ima NA  :  cal_fat, fiber, protein i calcium imaju NA vrednosti. 
+# Treba da ih menjamo sad 
+data_numeric.isna().sum()
+
+# Provera NA u procentima -> vidimo da calcium ima čak 41% NA vrednosti
+print((data_numeric.isna().mean() * 100).round(2))
+
+
+# Atribut calcium ima dosta nedostajućih vrednosti, pa NECE biti ni ZAMENJENE.
+# Atribut calcium se IZBACUJE iz dataseta, zbog prevelikog broja nedostajućih vrednosti.
+# GRANICA - uzimamo > 20 %
+data_numeric.drop(columns='calcium', inplace=True)
+
+# Atributi sa NA (ali koji nisu izbačeni kao calcium)
+ostaleNa = ['cal_fat', 'fiber', 'protein']
+
+# Provera normalne raspodele
+for kolona in ostaleNa:
+    series = data_numeric[kolona].dropna() 
+    stat, p = shapiro(series)                     # preko shapiro proveravamo i preko normalne distribucije 
+    print(f"{kolona}: p = {p:.5f} → {'nije normalna' if p < 0.05 else 'normalna'} distribucija")
+
+# S obzirom da ni jedna od ovih kolona nema normalnu raspodelu, nedostajuće vrednosti menjamo medijanom
+for kolona in ostaleNa:
+    median = data_numeric[kolona].median()
+    data_numeric[kolona] = data_numeric[kolona].fillna(median)
+
+# proveravam da li mi je ostalo jos Na vrednosti u tom podskupu (samo numerickom)
+data_numeric.isna().sum() 
+
+
+# MATRICA KORELACIJE 
+corr = data_numeric.corr(numeric_only=True).round(4)
+plt.figure(figsize=(11,8))
+sb.heatmap(corr, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+plt.title('MATRICA KORELACIJE')
+plt.show()
+
+print(data_numeric[['total_fat', 'protein']].head(20)) 
+
+# IZBOR PREDIKTORA 
+target = 'protein'
+features = ['cholesterol', 'calories', 'sodium']  # najveru korelisanost 
+
+# PODELA NA TEST I TRAIN 
+train_df, test_df = train_test_split(data_subset, test_size=0.2, random_state=123)
+
+# Provera train i test
+print(f"Broj redova u train skupu: {len(train_df)}")     # ispisujem broj redova u train skupu
+print(f"Broj redova u test skupu: {len(test_df)}")     # ispisujem broj redova u test skupu
+
+
+# PRAVLJENJE LINEARNOG MODELA 
+lm1 = smf.ols(f'{target} ~ ' + ' + '.join(features), data=train_df).fit()
+print(lm1.summary())  # pravim izvestaj 
+
+# Reziduali predstavljaju razliku između stvarnih i predviđenih vrednosti ciljne promenljive (protein).
+# Idealno je da su ravnomerno raspodeljeni oko nule.
+
+# R-kvadrat iznosi 0.852 → model objašnjava oko 85.2% varijabilnosti ciljne promenljive.
+# F-statistika je visoka (778.0)
+# Upozorenje: Condition number je 3.45e+03 → može postojati multikolinearnost, sto cu svakako da proverim preko VIF vrednosti 
+
+# PREDIKCIJA NA TEST SKUPU 
+y_true = test_df['protein']
+X_test = test_df[['cholesterol', 'calories', 'sodium']]
+
+y_pred = lm1.predict(X_test)
+
+# PRAVIM NOVI DATAFRAME ZA POREDJENJA STVARNOG I PREVIDJENOG 
+results = pd.DataFrame({
+    'Stvarno': y_true.values,
+    'Predviđeno': y_pred.round(2)
+})
+
+# Prikazujem prvih 10 predikcija
+results.head(10)
+
+# GRAFIKONI 
+sb.residplot(x=lm1.fittedvalues, y=lm1.resid, lowess=True, line_kws={'color':'red'})
+plt.axhline(0, color='black'); plt.title('Residuals vs Fitted'); plt.show()
+
+sm.qqplot(lm1.resid, fit=True, line='45'); plt.title('Normal Q-Q'); plt.show()
+
+sqrt_abs_resid = np.sqrt(np.abs(lm1.resid))
+sb.scatterplot(x=lm1.fittedvalues, y=sqrt_abs_resid)
+sb.regplot(x=lm1.fittedvalues, y=sqrt_abs_resid, scatter=False, lowess=True, line_kws={'color':'red'})
+plt.title('Scale-Location'); plt.show()
+
+sm.graphics.influence_plot(lm1, criterion='cooks'); plt.title('Residuals vs Leverage'); plt.show()
+
+# - Residuals vs Fitted -
+# Grafikon prikazuje raspodelu reziduala (razlike između stvarnih i predviđenih vrednosti) u odnosu na predviđene vrednosti.
+# Ovaj grafikon se koristi da proveri da li je zadovoljena pretpostavka linearne veze.
+# Residuali bi trebalo da budu raspoređeni oko horizontalne linije (vrednost bliska nuli).
+# Sa grafikona se može zaključiti da postoje manja odstupanja (nelineranost), što može ukazivati na neadekvatnost modela.
+
+# - Normal Q-Q -
+# Ovaj grafikon prikazuje da li reziduali imaju normalnu raspodelu.
+# Tačke bi trebalo da leže duž dijagonale.
+# Pošto tačke odstupaju od dijagonale na krajevima, pretpostavka normalnosti nije u potpunosti ispunjena.
+
+# - Scale-Location -
+# Prikazuje da li je varijabilnost (varijansa) reziduala konstantna duž predikcija.
+# Idealno, crvena linija treba da bude horizontalna i da tačke budu ravnomerno raspoređene.
+# U ovom slučaju, varijansa reziduala nije potpuno konstantna, što ukazuje na moguću heteroskedastičnost.
+
+# - Residuals vs Leverage -
+# Ovaj grafikon identifikuje ekstremno visoke/niske vrednosti (outliere) i njihove uticaje na model.
+# Većina tačaka bi trebalo da bude unutar granica, a ekstremne vrednosti retke.
+# Na osnovu Cookove distance vidi se da postoji nekoliko potencijalnih outliera, što može uticati na stabilnost modela.
+
+
+# PROVERA MULTIKOLINEARNOSTI  
+X = sm.add_constant(train_df[features])
+vif = pd.Series([variance_inflation_factor(X.values, i) for i in range(X.shape[1])], index=X.columns)
+print('√VIF prve verzije:\n', np.sqrt(vif))
+
+# Ako mi je vrednost sqrt(vif) > 2, to znaci da postoji multikolinearnost, sto moze dovesti do nepouzdanih procena.
+# Pa zato pravim novi model, ALI BEZ TE PROMENLJIVE cija je vrednost >2 
+lm2 = smf.ols(f'{target} ~ cholesterol + sodium', data=train_df).fit()
+
+# PROVERAVAM VIF ZA TAJ NOVI NAPRAVLJENI MODEL 
+X = sm.add_constant(train_df[['cholesterol', 'sodium']])
+vif = pd.Series([variance_inflation_factor(X.values, i) for i in range(X.shape[1])], index=X.columns)
+print('√VIF druge verzije:\n', np.sqrt(vif))
+
+# NEMA VISE MULTIKOLINEARNOSTI 
+

@@ -1,0 +1,187 @@
+# svi potrebni importii
+
+import pandas as pd
+import numpy as np
+from scipy.stats import shapiro
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score,precision_score,recall_score,f1_score
+
+# Učitavamo podatke (navodimo koje vrednosti ćemo smatrati nedostajućim: '-', ' ', '')
+df = pd.read_csv("./data/spotify.csv", na_values=['-', ' ', ''], encoding='latin1')
+
+display(df.head())
+df.info()
+
+
+# KREIRAM IZLAZNU VARIJABLU 
+# Proveravamo da li varijabla streams ima nedostajuće vrednosti jer na osnovu nje kreiramo izlaznu varijablu
+print("Broj nedostajućih vrednosti varijable streams:", df['streams'].isna().sum())
+# Nema nedostajućih vrednosti
+
+# Računamo treći kvartil
+streams_3Q = df['streams'].quantile(0.75)
+print(streams_3Q)
+
+# Kreiramo izlaznu varijablu HighStreams na osnovu vrednosti varijable streams
+df['HighStreams'] = np.where(df['streams'] > streams_3Q, 'Yes', 'No')
+df['HighStreams'] = df['HighStreams'].map({'Yes': 1, 'No': 0})
+
+# Odmah izbacujemo varijablu streams jer smo je koristili za kreiranje izlazne varijable
+df.drop(columns='streams', inplace=True)
+
+
+# ZAMENJUJEM NA VREDNOSTI 
+print(df.isna().sum())    # Provera da li varijable imaju nedostajuće vrednosti
+# Varijable in_spotify_charts i in_apple_charts imaju po 2 nedostajuće vrednosti
+
+# Da bismo odlučili da li da koristimo mean ili median, prvo ćemo proveriti raspodelu ovih varijabli pomoću Shapiro-Wilk testa.
+# Ako varijable imaju normalnu raspodelu, nedostajuće vrednosti ćemo zameniti mean-om, a ako nemaju normalnu raspodelu, koristićemo median. 
+
+# PROVERA NORMALNE RASPODELE  
+p_spotify = shapiro(df['in_spotify_charts'].dropna())[1]     # radimo preko shapiro i norm.raspodele 
+p_apple = shapiro(df['in_apple_charts'].dropna())[1]
+
+print("p-vrednost za in_spotify_charts:", p_spotify)
+print("p-vrednost za in_apple_charts:", p_apple)
+# Obe varijable imaju vrednost p < 0.05 što znači da nemaju normalnu raspodelu i nedostajuće vrednosti zamenićemo medijanom
+
+median_spotify = df['in_spotify_charts'].median()
+print(median_spotify)
+median_apple = df['in_apple_charts'].median()
+print(median_apple)
+# Dobili smo da su medijane 3 i 38 za spotify i apple respektivno
+
+# ZAMENA NA VREDNOSTI MEDIJANAM  
+df['in_spotify_charts'] = df['in_spotify_charts'].fillna(median_spotify)
+df['in_apple_charts'] = df['in_apple_charts'].fillna(median_apple)
+
+print(df.isna().sum())   # NEMA VISE NA VREDNOSTI 
+
+df.drop(columns='track_name', inplace=True)   # nema smisla da bude tu jer je nevazno, ne utice na ishod i na rezultat 
+
+# CRTAM GRAFIKONE REDOM PO KOLONAMA 
+df.columns
+
+plt.figure(figsize=(6,4))
+sns.kdeplot(data=df, x='released_year', hue='HighStreams', fill=True, alpha=0.5)
+plt.show()  
+# AKO SU RAZLICITE ---> VARIJABLA JE ZNACAJNA ZA PREVIDJANJE 
+
+# .......... 
+# AKO JE SLICNA RASPODELA --> IZOSTAVLJAMO JE, IZBACUJEMO JE 
+df.drop(columns='bpm', inplace=True)
+
+plt.figure(figsize=(6,4))
+sns.countplot(data=df, x='mode', hue='HighStreams', palette='pastel')
+plt.show()
+
+# SKALIRANJE NUMERICKIH VARIJABLI 
+df.describe()
+df.info()
+
+numerickeVarijable = ['released_year', 'in_spotify_playlists', 'in_spotify_charts', 'in_apple_playlists', 'in_apple_charts']
+# PROVERAVAMO DA LI OVE NUM.VARIJAB. IMAJU AUTLAJERE I NA OSNOVU TOGA ODLUCUJEMO DA LI SE KORISTI NORMALIZACIJA ILI STANDARDIZACIJA ZA SKALIRANJE PODATAKA. 
+# NEMA AUTLAJERA --> NORMALIZACIJA,        IMA --> STANDARDIZACIJA
+
+def brojAutlajera(variable):        # pisemo fju za racunanje broja autlajera 
+    q1 = variable.quantile(0.25)      # prvi kvartil 
+    q3 = variable.quantile(0.75)      # treci kvartil 
+    iqr = q3 - q1                     # interkvartilni opseg 
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    return ((variable < lower) | (variable > upper)).sum()     # iznad i ispod 
+
+autlajeriPoKoloni = df[numeric_vars].apply(brojAutlajera)
+print("Broj autlajera po kolonama:\n", autlajeriPoKoloni)
+# Sve imaju autlajere --> koristimo standardizaciju
+
+
+
+#  PROVERA DA LI VARIJABLE IMAJU NORM.RASP. DA ZNAMO KAKO DA RADIMO STANDARDIZACIJU
+
+shapiro_rezultati = df[numerickeVarijable].apply(lambda x: shapiro(x)[1])
+print("Shapiro-Wilk p-vrednosti:\n", shapiro_rezultati)
+
+# Sve imaju p-vrednosti < 0.05 --> nemaju norm. rasp. pa standardizujemo preko RobustScaler-a, koji koristi median i IQR (interkvartilni opseg, razlika između treceg i prvog kvartila)
+
+# STANDARDIZUJEMO NUMERICKE VARIJABLE PREKO RobustScaler-a
+robust_scaler = RobustScaler()
+df_st = pd.DataFrame()     # pravimo prazan DataFrame u koji ubacujemo sve vrednosti spremne za KNN
+df_st[numerickeVarijable] = robust_scaler.fit_transform(df[numerickeVarijable])
+
+df.info() 
+
+print(df['mode'].unique())
+# Varijabla mode ima samo dve vrednosti ('Major' i 'Minor'), binarna je i možemo je mapirati u brojeve (npr. 0 i 1)
+df_st['mode'] = df['mode'].map({'Major': 0, 'Minor': 1})
+
+# Dodajemo i izlaznu varijablu HighStreams u standardizovani DataFrame
+df_st['HighStreams'] = df['HighStreams']
+
+# PODELA NA TRAIN I TEST SKUPOVEE   ///   Delimo podatke na trening (80%) i test (20%) skup
+X = df_st.drop(columns='HighStreams')
+y = df_st['HighStreams']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+
+# IZRACUNAVANJE OPTIMALNE VREDNOSTI ZA K 
+knn = KNeighborsClassifier()
+
+# Koristimo neparne vrednosti za k (broj suseda) u opsegu od 3 do 25 kako bi uvek postojala dominantna klasa
+param_grid = {'n_neighbors': list(range(3, 26, 2))}
+
+# KROS VALIDACIJA SA 10 ITER. : 
+cv = GridSearchCV(estimator=knn,
+                  param_grid=param_grid,
+                  cv=10,
+                  scoring='accuracy',
+                  verbose = 1,
+                  n_jobs = -1)
+cv.fit(X_train, y_train)
+
+best_k = cv.best_params_['n_neighbors']
+print("Optimalna vredn. za k:", best_k)
+
+# PRAVIMO KNN KLASIFIKATOR NA OSNOVU TOG DOBIJENOG K 
+knn = KNeighborsClassifier(n_neighbors=best_k)
+knn.fit(X_train, y_train)      # treniramo knn 
+
+y_pred = knn.predict(X_test)
+
+# MATRICA KONFUZIJE 
+cm_knn = confusion_matrix(y_test, y_pred)
+
+disp = ConfusionMatrixDisplay(confusion_matrix=cm_knn,
+                              display_labels=['No', 'Yes'])
+disp.plot(cmap=plt.cm.Blues)
+plt.show()
+
+# Na glavnoj dijagonali matrice nalaze se tačne predikcije, dok se na sporednoj dijagonali nalaze pogrešne predikcije. 
+
+# 4 metrike (za procenu uspešnosti klasifikatora su):
+
+# **Accuracy (tačnost)** – procenat tačnih predikcija (i pozitivnih i negativnih) u odnosu na sve observacije
+# **Precision (preciznost)** – procenat observacija za koje smo predvideli da su pozitivne i koje zaista jesu pozitivne
+# **Recall / ODZIV** – procenat observacija koje su stvarno pozitivne i koje smo mi tačno predvideli kao pozitivne
+#  F1 SCORE  –->  mera za balansiranje vrednosti precision-a i recall-a
+
+def izracunaj_cetiri_metrike(y_true, y_pred):
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, pos_label=1)
+    recall = recall_score(y_true, y_pred, pos_label=1)
+    f1 = f1_score(y_true, y_pred, pos_label=1)
+    return {
+        'accuracy': accuracy,
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1': float(f1)
+    }
+
+knn_rez = izracunaj_cetiri_metrike(y_test, y_pred)
+print(knn_rez)
+

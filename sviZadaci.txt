@@ -1,0 +1,1086 @@
+# LINEARNAAAAAAAAAA 
+
+# svi potrebni importi
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sb
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from sklearn.model_selection import train_test_split
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from scipy.stats import shapiro
+
+# Ucitavam iz dataseta 
+data = pd.read_csv(".venv" / "data" 'fastfood.csv', na_values=['NA'])
+
+display(data.head())
+print(data.info())
+
+# Proveravam NA vrednosti 
+data.isna().sum()
+
+# Podskup sa total_fat ≤ 125
+data_subset = data.loc[data['total_fat'] <= 125].copy()
+
+print(f"Br redova u originalu: {len(data)}")
+print(f"Br redova u podskupu: {len(data_subset)}")
+
+#    loc je Pandas metoda koja služi za selektovanje
+nedostajuceVrednosti = ['-', ' ', '']
+# Proveravam koje kolone poseduju specijalne karaktere
+data_subset.isin(nedostajuceVrednosti).sum()
+
+# Zamenimo specijalne karaktere
+data_subset.replace(nedostajuceVrednosti, np.nan, inplace=True)
+
+# Ponovna provera da li je ostalo nest od specijanlih karaktera
+print(data_subset.isin(nedostajuceVrednosti).sum())
+
+# SAD GLEDAM STA MI SE UCITALO KAO OBJECT ODNOSNO STRING 
+# Kad su po prirodi NEnumericke, onda ih ostavljam tako, a u surpotnom izbacujem i gledam ko ima NA vrednosti
+
+# fiber, protein i calcium poseduju NA vrednosti 
+# Pretvaramo cal_fat i protein u numeričke (jer su trenutno object)
+data_subset['protein'] = pd.to_numeric(data_subset['protein'], errors='coerce')
+data_subset['cal_fat'] = pd.to_numeric(data_subset['cal_fat'], errors='coerce')
+
+# Pravimo subset, samo numerički podaci   ************
+data_numeric = data_subset.select_dtypes(include=['number']).copy()
+
+print(data_numeric.info())
+data_numeric.columns
+
+
+# Gledamo ko ima NA  :  cal_fat, fiber, protein i calcium imaju NA vrednosti. 
+# Treba da ih menjamo sad 
+data_numeric.isna().sum()
+
+# Provera NA u procentima -> vidimo da calcium ima čak 41% NA vrednosti
+print((data_numeric.isna().mean() * 100).round(2))
+
+
+# Atribut calcium ima dosta nedostajućih vrednosti, pa NECE biti ni ZAMENJENE.
+# Atribut calcium se IZBACUJE iz dataseta, zbog prevelikog broja nedostajućih vrednosti.
+# GRANICA - uzimamo > 20 %
+data_numeric.drop(columns='calcium', inplace=True)
+
+# Atributi sa NA (ali koji nisu izbačeni kao calcium)
+ostaleNa = ['cal_fat', 'fiber', 'protein']
+
+# Provera normalne raspodele
+for kolona in ostaleNa:
+    series = data_numeric[kolona].dropna() 
+    stat, p = shapiro(series)                     # preko shapiro proveravamo i preko normalne distribucije 
+    print(f"{kolona}: p = {p:.5f} → {'nije normalna' if p < 0.05 else 'normalna'} distribucija")
+
+# S obzirom da ni jedna od ovih kolona nema normalnu raspodelu, nedostajuće vrednosti menjamo medijanom
+for kolona in ostaleNa:
+    median = data_numeric[kolona].median()
+    data_numeric[kolona] = data_numeric[kolona].fillna(median)
+
+# proveravam da li mi je ostalo jos Na vrednosti u tom podskupu (samo numerickom)
+data_numeric.isna().sum() 
+
+
+# MATRICA KORELACIJE 
+corr = data_numeric.corr(numeric_only=True).round(4)
+plt.figure(figsize=(11,8))
+sb.heatmap(corr, annot=True, cmap='coolwarm', vmin=-1, vmax=1)
+plt.title('MATRICA KORELACIJE')
+plt.show()
+
+print(data_numeric[['total_fat', 'protein']].head(20)) 
+
+# IZBOR PREDIKTORA 
+target = 'protein'
+features = ['cholesterol', 'calories', 'sodium']  # najveru korelisanost 
+
+# PODELA NA TEST I TRAIN 
+train_df, test_df = train_test_split(data_subset, test_size=0.2, random_state=123)
+
+# Provera train i test
+print(f"Broj redova u train skupu: {len(train_df)}")     # ispisujem broj redova u train skupu
+print(f"Broj redova u test skupu: {len(test_df)}")     # ispisujem broj redova u test skupu
+
+
+# PRAVLJENJE LINEARNOG MODELA 
+lm1 = smf.ols(f'{target} ~ ' + ' + '.join(features), data=train_df).fit()
+print(lm1.summary())  # pravim izvestaj 
+
+# Reziduali predstavljaju razliku između stvarnih i predviđenih vrednosti ciljne promenljive (protein).
+# Idealno je da su ravnomerno raspodeljeni oko nule.
+
+# R-kvadrat iznosi 0.852 → model objašnjava oko 85.2% varijabilnosti ciljne promenljive.
+# F-statistika je visoka (778.0)
+# Upozorenje: Condition number je 3.45e+03 → može postojati multikolinearnost, sto cu svakako da proverim preko VIF vrednosti 
+
+# PREDIKCIJA NA TEST SKUPU 
+y_true = test_df['protein']
+X_test = test_df[['cholesterol', 'calories', 'sodium']]
+
+y_pred = lm1.predict(X_test)
+
+# PRAVIM NOVI DATAFRAME ZA POREDJENJA STVARNOG I PREVIDJENOG 
+results = pd.DataFrame({
+    'Stvarno': y_true.values,
+    'Predviđeno': y_pred.round(2)
+})
+
+# Prikazujem prvih 10 predikcija
+results.head(10)
+
+# GRAFIKONI 
+sb.residplot(x=lm1.fittedvalues, y=lm1.resid, lowess=True, line_kws={'color':'red'})
+plt.axhline(0, color='black'); plt.title('Residuals vs Fitted'); plt.show()
+
+sm.qqplot(lm1.resid, fit=True, line='45'); plt.title('Normal Q-Q'); plt.show()
+
+sqrt_abs_resid = np.sqrt(np.abs(lm1.resid))
+sb.scatterplot(x=lm1.fittedvalues, y=sqrt_abs_resid)
+sb.regplot(x=lm1.fittedvalues, y=sqrt_abs_resid, scatter=False, lowess=True, line_kws={'color':'red'})
+plt.title('Scale-Location'); plt.show()
+
+sm.graphics.influence_plot(lm1, criterion='cooks'); plt.title('Residuals vs Leverage'); plt.show()
+
+# - Residuals vs Fitted -
+# Grafikon prikazuje raspodelu reziduala (razlike između stvarnih i predviđenih vrednosti) u odnosu na predviđene vrednosti.
+# Ovaj grafikon se koristi da proveri da li je zadovoljena pretpostavka linearne veze.
+# Residuali bi trebalo da budu raspoređeni oko horizontalne linije (vrednost bliska nuli).
+# Sa grafikona se može zaključiti da postoje manja odstupanja (nelineranost), što može ukazivati na neadekvatnost modela.
+
+# - Normal Q-Q -
+# Ovaj grafikon prikazuje da li reziduali imaju normalnu raspodelu.
+# Tačke bi trebalo da leže duž dijagonale.
+# Pošto tačke odstupaju od dijagonale na krajevima, pretpostavka normalnosti nije u potpunosti ispunjena.
+
+# - Scale-Location -
+# Prikazuje da li je varijabilnost (varijansa) reziduala konstantna duž predikcija.
+# Idealno, crvena linija treba da bude horizontalna i da tačke budu ravnomerno raspoređene.
+# U ovom slučaju, varijansa reziduala nije potpuno konstantna, što ukazuje na moguću heteroskedastičnost.
+
+# - Residuals vs Leverage -
+# Ovaj grafikon identifikuje ekstremno visoke/niske vrednosti (outliere) i njihove uticaje na model.
+# Većina tačaka bi trebalo da bude unutar granica, a ekstremne vrednosti retke.
+# Na osnovu Cookove distance vidi se da postoji nekoliko potencijalnih outliera, što može uticati na stabilnost modela.
+
+
+# PROVERA MULTIKOLINEARNOSTI  
+X = sm.add_constant(train_df[features])
+vif = pd.Series([variance_inflation_factor(X.values, i) for i in range(X.shape[1])], index=X.columns)
+print('√VIF prve verzije:\n', np.sqrt(vif))
+
+# Ako mi je vrednost sqrt(vif) > 2, to znaci da postoji multikolinearnost, sto moze dovesti do nepouzdanih procena.
+# Pa zato pravim novi model, ALI BEZ TE PROMENLJIVE cija je vrednost >2 
+lm2 = smf.ols(f'{target} ~ cholesterol + sodium', data=train_df).fit()
+
+# PROVERAVAM VIF ZA TAJ NOVI NAPRAVLJENI MODEL 
+X = sm.add_constant(train_df[['cholesterol', 'sodium']])
+vif = pd.Series([variance_inflation_factor(X.values, i) for i in range(X.shape[1])], index=X.columns)
+print('√VIF druge verzije:\n', np.sqrt(vif))
+
+# NEMA VISE MULTIKOLINEARNOSTI 
+
+
+# ============================================================================================================================================================================
+
+2. STABLO: 
+
+# svi potrebni importi 
+
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Ucitavam detaset
+df = pd.read_csv('data/bank.csv', na_values=['-', ' ', ''])
+
+display(df.head())
+df.info()
+
+# Kreiranje varijable Stayed na osnovu vrednosti varijable Exited
+#Provera da li ima NA u Exited
+print("Exited ima NA vrednosti:", df['Exited'].isna().any())
+df['Stayed'] = np.where(df['Exited'] == 0, 'Yes', 'No')   # pozitivna klasa je Yes
+#Izlazna varijabla se prebacuje u 1 i 0 zato što DecisionTreeClassifier iz scikit-learn biblioteke radi samo sa numeričkim tipovima podataka
+df['Stayed'] = df['Stayed'].map({'Yes': 1, 'No': 0})
+
+#Uklanjanje varijable Exited jer je korišćena za kreiranje izlazne varijable
+df.drop(columns='Exited', inplace=True)
+
+
+#Kreiranje podskupa
+#Zamena nedostajućih vrednosti
+print(df['Age'].isna().sum())
+df['Age'].fillna(df['Age'].median())
+
+df = df[df['Age'] <= 87]
+print(df['Age'].describe())
+
+# Zamena nedostajućih vrednosti
+print("Neodostajuće vrednosti:\n", df.isna().sum())
+#Varijable Surname i Geography imaju nedostajuće vrednosti
+#Varijablu Surname ćemo kasnije izbaciti, jer nije relevantna za predviđanje izlazne varijable
+
+#Nedostajuće vrednosti varijable Geography zamenjujemo sa najčešćom vrednošću
+df['Geography'] = df['Geography'].fillna(df['Geography'].mode()[0])
+df.Geography.isna().sum()
+
+df.info()   # gledamo tipove vrednosti 
+
+#Varijabla surname se uklanja jer nije značajna za procenu odliva klijenta
+df = df.drop(columns=['Surname'])
+
+plt.figure(figsize=(6,4))
+sns.kdeplot(data=df, x='CreditScore', hue='Stayed', fill=True, alpha=0.55)
+plt.tight_layout()
+plt.show()
+
+#Ne treba zadržati CreditScore jer se raspodele za varijablu Stayed (Yes/No) gotovo potpuno preklapaju i atribut ne doprinosi razdvajanju klasa.
+df.drop(columns=['CreditScore'], inplace=True)
+
+plt.figure(figsize=(6,4))
+sns.kdeplot(data=df, x='Age', hue='Stayed', fill=True, alpha=0.55)
+plt.tight_layout()
+plt.show()
+# Na grafiku se može videti da se vrednosti varijable Age razlikuju u pogledu izlazne varijable. Varijabla Age će se uključiti u model
+
+# COUNTPLOT --> za ocene, za 0/1, binarne, yes/no itd 
+plt.figure(figsize=(6,4))
+sns.countplot(data=df, x='IsActiveMember', hue='Stayed', palette='pastel')
+plt.xlabel('IsActiveMember')
+plt.ylabel('Broj klijenata')
+plt.legend(title='Stayed')
+plt.tight_layout()
+plt.show()
+#Na grafiku se može videti da se proporcije klijenata sa IsActiveMember=0 i IsActiveMember=1 razlikuju u odnosu na izlaznu promenljivu, pa će varijabla IsActiveMember biti uključena u model.
+
+# I TAKO REDOM ZA SVE KOLONE ODRADIM I PROCENIM 
+
+
+df.select_dtypes(include=object).info()
+
+#Druge karakter varijable se procenjuju na osnovu njihovog tipa (numericka ili kategorička), broja različitih vrednosti i raspodele vrednosti
+df_vars = df.select_dtypes(include=object).columns.tolist()
+for df_var in df_vars:
+    print(f"{df_var}: {df[df_var].nunique()}")
+#Obe varijable imaju mali broj različitih vrednosti
+
+
+df['Geography'].value_counts()
+df['Gender'].value_counts() 
+
+
+from sklearn.preprocessing import OneHotEncoder
+
+#S obzirom da su varijable Geography i Gender kategoričke, koristi se One-Hot Encoding
+ohe = OneHotEncoder(sparse_output=False, drop='first')
+cats = ['Geography', 'Gender']
+encoded_array = ohe.fit_transform(df[cats])
+encoded_cols = ohe.get_feature_names_out(cats)
+
+df_ohe = pd.DataFrame(encoded_array, columns=encoded_cols, index=df.index)
+df = df.drop(columns=cats).join(df_ohe)
+
+df.head()
+
+# Podela podataka na train i test dataset
+X = df.drop(columns='Stayed')  # ona nova koju smo napravili na samom pocetku od Exited 
+y = df['Stayed']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# Raspodela klasa u trening i test skupu
+print(y_train.value_counts(normalize=True))
+print(y_test.value_counts(normalize=True))
+
+
+# Racunamo optimalnu vrednost parametra ccp_alpha
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import GridSearchCV,StratifiedKFold
+
+cv  = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+param_grid = {'ccp_alpha':np.arange(0.0,0.05,0.0025)}
+grid = GridSearchCV(DecisionTreeClassifier(random_state=42),
+                    param_grid=param_grid,
+                    cv=cv,
+                    scoring='accuracy')
+grid.fit(X_train, y_train)
+
+best_ccp_alpha = grid.best_params_['ccp_alpha']
+print("Najbolja vrednost ccp_alpha:",best_ccp_alpha)
+
+
+# KREIRANJE MODELA STABLA ODLUCIVANJA 
+tree = DecisionTreeClassifier(ccp_alpha=best_ccp_alpha,random_state=42)
+tree.fit(X_train, y_train)
+
+# ISCRTAVAMO STABLO ODLUCIVANJA 
+plt.figure(figsize=[30,10])
+plot_tree(tree,
+          feature_names=X_train.columns,
+          class_names=['No','Yes'],
+          filled=True,
+          rounded=True,
+          fontsize=10)
+plt.title("Stablo odlucivanja:::: ")
+plt.show()
+
+# Kreiranje predikcije za test skup za tree
+y_pred = tree.predict(X_test)
+
+
+# MATRICA KONFUZIJE 
+cm = confusion_matrix(y_test, y_pred)
+print("Matrica kofuzije:")
+print(cm)
+
+# Kreiraj DataFrame sa oznakama redova i kolona
+cm_df = pd.DataFrame(cm,
+                       index = ['Stvarno:No','Stvarno:Yes'],
+                       columns = ['Predviđeno:No','Predviđeno:Yes'])
+print(cm_df)
+
+
+# :::::: 4 metrike:::::: 
+#4 metrike se koriste za evaluaciju performansi klasifikacionog modela:
+#    Accuracy (tačnost) - procenat tačnih predikcija (i pozitivnih i negativnih);
+#    Precision (preciznost) - procenat tačno predviđenih pozitivnih predikcija u odnosu na sve pozitivne predikcije koje je model napravio;
+#    Recall (odziv) - procenat pozitivnih predikcija koje je model tačno identifikovao kao pozitivne u odnosu na ukupan broj stvarno pozitivnih;
+#    F1 - mera za balansiranje vrednosti precision-a i recall-a.
+
+def izracunaj_cetiri_metrike(cm, model_name=""):
+
+    from pandas import Series
+
+    TP = cm[1,1]
+    TN = cm[0,0]
+    FP = cm[0,1]
+    FN = cm[1,0]
+
+    accuracy = (TP + TN)/cm.sum()
+    precision = TP/(TP + FP)
+    recall = TP/(TP + FN)
+    F1 = 2*precision*recall/(precision + recall)
+
+    return Series(data=[accuracy, precision, recall, F1],
+                  index=['accuracy', 'precision', 'recall', 'F1'],
+                  name=model_name)
+
+
+
+rezzz = izracunaj_cetiri_metrike(cm, 'tree1')
+rezzz
+
+
+
+
+
+# ============================================================================================================================================================================
+
+3.  KNN: 
+
+# svi potrebni importii
+
+import pandas as pd
+import numpy as np
+from scipy.stats import shapiro
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score,precision_score,recall_score,f1_score
+
+# Učitavamo podatke (navodimo koje vrednosti ćemo smatrati nedostajućim: '-', ' ', '')
+df = pd.read_csv("./data/spotify.csv", na_values=['-', ' ', ''], encoding='latin1')
+
+display(df.head())
+df.info()
+
+
+# KREIRAM IZLAZNU VARIJABLU 
+# Proveravamo da li varijabla streams ima nedostajuće vrednosti jer na osnovu nje kreiramo izlaznu varijablu
+print("Broj nedostajućih vrednosti varijable streams:", df['streams'].isna().sum())
+# Nema nedostajućih vrednosti
+
+# Računamo treći kvartil
+streams_3Q = df['streams'].quantile(0.75)
+print(streams_3Q)
+
+# Kreiramo izlaznu varijablu HighStreams na osnovu vrednosti varijable streams
+df['HighStreams'] = np.where(df['streams'] > streams_3Q, 'Yes', 'No')
+df['HighStreams'] = df['HighStreams'].map({'Yes': 1, 'No': 0})
+
+# Odmah izbacujemo varijablu streams jer smo je koristili za kreiranje izlazne varijable
+df.drop(columns='streams', inplace=True)
+
+
+# ZAMENJUJEM NA VREDNOSTI 
+print(df.isna().sum())    # Provera da li varijable imaju nedostajuće vrednosti
+# Varijable in_spotify_charts i in_apple_charts imaju po 2 nedostajuće vrednosti
+
+# Da bismo odlučili da li da koristimo mean ili median, prvo ćemo proveriti raspodelu ovih varijabli pomoću Shapiro-Wilk testa.
+# Ako varijable imaju normalnu raspodelu, nedostajuće vrednosti ćemo zameniti mean-om, a ako nemaju normalnu raspodelu, koristićemo median. 
+
+# PROVERA NORMALNE RASPODELE  
+p_spotify = shapiro(df['in_spotify_charts'].dropna())[1]     # radimo preko shapiro i norm.raspodele 
+p_apple = shapiro(df['in_apple_charts'].dropna())[1]
+
+print("p-vrednost za in_spotify_charts:", p_spotify)
+print("p-vrednost za in_apple_charts:", p_apple)
+# Obe varijable imaju vrednost p < 0.05 što znači da nemaju normalnu raspodelu i nedostajuće vrednosti zamenićemo medijanom
+
+median_spotify = df['in_spotify_charts'].median()
+print(median_spotify)
+median_apple = df['in_apple_charts'].median()
+print(median_apple)
+# Dobili smo da su medijane 3 i 38 za spotify i apple respektivno
+
+# ZAMENA NA VREDNOSTI MEDIJANAM  
+df['in_spotify_charts'] = df['in_spotify_charts'].fillna(median_spotify)
+df['in_apple_charts'] = df['in_apple_charts'].fillna(median_apple)
+
+print(df.isna().sum())   # NEMA VISE NA VREDNOSTI 
+
+df.drop(columns='track_name', inplace=True)   # nema smisla da bude tu jer je nevazno, ne utice na ishod i na rezultat 
+
+# CRTAM GRAFIKONE REDOM PO KOLONAMA 
+df.columns
+
+plt.figure(figsize=(6,4))
+sns.kdeplot(data=df, x='released_year', hue='HighStreams', fill=True, alpha=0.5)
+plt.show()  
+# AKO SU RAZLICITE ---> VARIJABLA JE ZNACAJNA ZA PREVIDJANJE 
+
+# .......... 
+# AKO JE SLICNA RASPODELA --> IZOSTAVLJAMO JE, IZBACUJEMO JE 
+df.drop(columns='bpm', inplace=True)
+
+plt.figure(figsize=(6,4))
+sns.countplot(data=df, x='mode', hue='HighStreams', palette='pastel')
+plt.show()
+
+# SKALIRANJE NUMERICKIH VARIJABLI 
+df.describe()
+df.info()
+
+numerickeVarijable = ['released_year', 'in_spotify_playlists', 'in_spotify_charts', 'in_apple_playlists', 'in_apple_charts']
+# PROVERAVAMO DA LI OVE NUM.VARIJAB. IMAJU AUTLAJERE I NA OSNOVU TOGA ODLUCUJEMO DA LI SE KORISTI NORMALIZACIJA ILI STANDARDIZACIJA ZA SKALIRANJE PODATAKA. 
+# NEMA AUTLAJERA --> NORMALIZACIJA,        IMA --> STANDARDIZACIJA
+
+def brojAutlajera(variable):        # pisemo fju za racunanje broja autlajera 
+    q1 = variable.quantile(0.25)      # prvi kvartil 
+    q3 = variable.quantile(0.75)      # treci kvartil 
+    iqr = q3 - q1                     # interkvartilni opseg 
+    lower = q1 - 1.5 * iqr
+    upper = q3 + 1.5 * iqr
+    return ((variable < lower) | (variable > upper)).sum()     # iznad i ispod 
+
+autlajeriPoKoloni = df[numeric_vars].apply(brojAutlajera)
+print("Broj autlajera po kolonama:\n", autlajeriPoKoloni)
+# Sve imaju autlajere --> koristimo standardizaciju
+
+
+
+#  PROVERA DA LI VARIJABLE IMAJU NORM.RASP. DA ZNAMO KAKO DA RADIMO STANDARDIZACIJU
+
+shapiro_rezultati = df[numerickeVarijable].apply(lambda x: shapiro(x)[1])
+print("Shapiro-Wilk p-vrednosti:\n", shapiro_rezultati)
+
+# Sve imaju p-vrednosti < 0.05 --> nemaju norm. rasp. pa standardizujemo preko RobustScaler-a, koji koristi median i IQR (interkvartilni opseg, razlika između treceg i prvog kvartila)
+
+# STANDARDIZUJEMO NUMERICKE VARIJABLE PREKO RobustScaler-a
+robust_scaler = RobustScaler()
+df_st = pd.DataFrame()     # pravimo prazan DataFrame u koji ubacujemo sve vrednosti spremne za KNN
+df_st[numerickeVarijable] = robust_scaler.fit_transform(df[numerickeVarijable])
+
+df.info() 
+
+print(df['mode'].unique())
+# Varijabla mode ima samo dve vrednosti ('Major' i 'Minor'), binarna je i možemo je mapirati u brojeve (npr. 0 i 1)
+df_st['mode'] = df['mode'].map({'Major': 0, 'Minor': 1})
+
+# Dodajemo i izlaznu varijablu HighStreams u standardizovani DataFrame
+df_st['HighStreams'] = df['HighStreams']
+
+# PODELA NA TRAIN I TEST SKUPOVEE   ///   Delimo podatke na trening (80%) i test (20%) skup
+X = df_st.drop(columns='HighStreams')
+y = df_st['HighStreams']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+
+# IZRACUNAVANJE OPTIMALNE VREDNOSTI ZA K 
+knn = KNeighborsClassifier()
+
+# Koristimo neparne vrednosti za k (broj suseda) u opsegu od 3 do 25 kako bi uvek postojala dominantna klasa
+param_grid = {'n_neighbors': list(range(3, 26, 2))}
+
+# KROS VALIDACIJA SA 10 ITER. : 
+cv = GridSearchCV(estimator=knn,
+                  param_grid=param_grid,
+                  cv=10,
+                  scoring='accuracy',
+                  verbose = 1,
+                  n_jobs = -1)
+cv.fit(X_train, y_train)
+
+best_k = cv.best_params_['n_neighbors']
+print("Optimalna vredn. za k:", best_k)
+
+# PRAVIMO KNN KLASIFIKATOR NA OSNOVU TOG DOBIJENOG K 
+knn = KNeighborsClassifier(n_neighbors=best_k)
+knn.fit(X_train, y_train)      # treniramo knn 
+
+y_pred = knn.predict(X_test)
+
+# MATRICA KONFUZIJE 
+cm_knn = confusion_matrix(y_test, y_pred)
+
+disp = ConfusionMatrixDisplay(confusion_matrix=cm_knn,
+                              display_labels=['No', 'Yes'])
+disp.plot(cmap=plt.cm.Blues)
+plt.show()
+
+# Na glavnoj dijagonali matrice nalaze se tačne predikcije, dok se na sporednoj dijagonali nalaze pogrešne predikcije. 
+
+# 4 metrike (za procenu uspešnosti klasifikatora su):
+
+# **Accuracy (tačnost)** – procenat tačnih predikcija (i pozitivnih i negativnih) u odnosu na sve observacije
+# **Precision (preciznost)** – procenat observacija za koje smo predvideli da su pozitivne i koje zaista jesu pozitivne
+# **Recall / ODZIV** – procenat observacija koje su stvarno pozitivne i koje smo mi tačno predvideli kao pozitivne
+#  F1 SCORE  –->  mera za balansiranje vrednosti precision-a i recall-a
+
+def izracunaj_cetiri_metrike(y_true, y_pred):
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, pos_label=1)
+    recall = recall_score(y_true, y_pred, pos_label=1)
+    f1 = f1_score(y_true, y_pred, pos_label=1)
+    return {
+        'accuracy': accuracy,
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1': float(f1)
+    }
+
+knn_rez = izracunaj_cetiri_metrike(y_test, y_pred)
+print(knn_rez)
+
+
+ 
+
+# ============================================================================================================================================================================
+
+
+4. NEURONSKE: 
+
+# potrebni importi 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import shapiro
+from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score, precision_score, recall_score, f1_score
+
+
+# Učitavamo podatke (navodimo koje vrednosti ćemo smatrati nedostajućim: '-', ' ', '')
+df = pd.read_csv("data/breast_cancer.csv", na_values=['-', ' ', ''])
+
+display(df.head())
+df.info()
+
+# Proveravamo da li varijable imaju nedostajuće vrednosti
+print(df.isna().sum())
+# Varijable mean radius i mean texture imaju po 2 nedostajuće vrednosti
+# Varijable `mean radius` i `mean texture` su numeričkog tipa i imaju mali broj nedostajućih vrednosti. Zbog toga ćemo koristiti metod zamene prosečnom vrednošću (`mean` i `median`). Da bismo odlučili da li da koristimo mean ili median, prvo ćemo proveriti raspodelu ovih varijabli pomoću Shapiro-Wilk testa. Ako varijable imaju normalnu raspodelu, nedostajuće vrednosti ćemo zameniti mean-om, a ako nemaju normalnu raspodelu, koristićemo median.
+
+# Proveravamo da li varijable imaju normalnu raspodelu
+p_radius = shapiro(df['mean radius'].dropna())[1]
+p_texture = shapiro(df['mean texture'].dropna())[1]
+
+print("p-vrednost za mean radius:", p_radius)
+print("p-vrednost za mean texture:", p_texture)
+
+# Obe varijable imaju vrednost p < 0.05 što znači da nemaju normalnu raspodelu i nedostajuće vrednosti zamenićemo medijanom
+
+median_radius = df['mean radius'].median()
+print(median_radius)
+median_texture = df['mean texture'].median()
+print(median_texture)
+# Dobili smo da su medijane 13.37 i 18.87 za mean radius i mean texture respektivno
+
+# Zamena nedostajućih vrednosti medijanama
+df['mean radius'] = df['mean radius'].fillna(median_radius)
+df['mean texture'] = df['mean texture'].fillna(median_texture)
+
+print(df.isna().sum())
+# Nema više nedostajućih vrednosti
+
+# Delimo podatke na trening (80%) i test (20%) skup
+
+X = df.drop(columns='isBenign')
+y = df['isBenign']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+# Standardizujemo varijable
+scaler=StandardScaler()
+X_train=scaler.fit_transform(X_train)
+X_test=scaler.transform(X_test)
+
+# Kreiranje neuronske mreže
+mlp1=MLPClassifier(hidden_layer_sizes=(64,32), max_iter=1000, random_state=42, solver='sgd')
+
+# Arhitektura kreirane neuronske mreže je **30–64–32–1**.
+# - Ulazni sloj sadrži **30 neurona**.
+# - Mreža ima **dva skrivena sloja**:
+#     - prvi skriveni sloj sadrži **64 neurona**,
+#     - drugi skriveni sloj sadrži **32 neurona**.
+#  - Izlazni sloj sadrži **1 neuron**.
+
+# Trening neuronske mreže
+mlp1.fit(X_train, y_train)
+
+# Tokom treninga neuronske mreže izvršavaju se sledeći koraci:
+# 1. **Forward propagation** - ulazni podaci prolaze kroz mrežu i izračunava se predikcija modela.
+# 2. **Računanje greške (loss)** - predikcije modela porede se sa stvarnim vrednostima i izračunava se greška modela.
+# 3. **Backward propagation** - na osnovu izračunate greške određuje se kako svaki parametar mreže utiče na grešku.
+# 4. **Ažuriranje parametara** - težine i bias vrednosti mreže ažuriraju se pomoću optimizacionog algoritma sa ciljem smanjenja greške modela.
+# Ovaj proces se ponavlja kroz više epoha, pri čemu jedna epoha predstavlja jedan prolazak kroz ceo trening skup podataka.
+
+# Prikaz promene vrednosti funkcije greške tokom treninga
+plt.figure()
+plt.plot(mlp1.loss_curve_)
+plt.xlabel("Iteracija")
+plt.ylabel("Loss")
+plt.grid()
+plt.show()
+
+y_pred=mlp1.predict(X_test)
+
+# MATRICA KONFUZIJE 
+cm = confusion_matrix(y_test, y_pred)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['malignant','benign'])
+disp.plot()
+plt.show()
+
+# Na glavnoj dijagonali matrice (41 i 70) nalaze se tačne predikcije, dok se na sporednoj dijagonali (2 i 1) nalaze pogrešne predikcije.
+
+# Evaluacione metrike
+# 4 metrike koje se najčešće koriste za procenu uspešnosti klasifikatora su:
+# - **Accuracy (tačnost)** – procenat tačnih predikcija (i pozitivnih i negativnih) u odnosu na sve observacije
+# - **Precision (preciznost)** – procenat observacija za koje smo predvideli da su pozitivne i koje zaista jesu pozitivne
+# - **Recall (odziv)** – procenat observacija koje su stvarno pozitivne i koje smo mi tačno predvideli kao pozitivne
+# - **F1 score** – mera za balansiranje vrednosti precision-a i recall-a
+
+def izracunaj_cetiri_metrike(y_true, y_pred):
+    accuracy = accuracy_score(y_true, y_pred)
+    precision = precision_score(y_true, y_pred, pos_label=0)
+    recall = recall_score(y_true, y_pred, pos_label=0)
+    f1 = f1_score(y_true, y_pred, pos_label=0)
+    return {
+        'accuracy': accuracy,
+        'precision': float(precision),
+        'recall': float(recall),
+        'f1': float(f1)
+    }
+
+rezzz=izracunaj_cetiri_metrike(y_test, y_pred)
+print(rezzz)
+
+
+
+# ============================================================================================================================================================================
+
+
+5. KMEANS: 
+
+# POTREBNI IMPORTI 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import sklearn.cluster as cluster
+
+# UCITAVAM DATASET 
+data = pd.read_csv('./data/spotify.csv')
+
+# PRAVIM TRAZENI PODSKUP 
+cl_data = data[data["speechiness"] <= 60].copy()
+
+# GLEDAM SVE PODATKE 
+cl_data
+
+
+# BIRAMO PROMENLJIVE ZA KLASTERIZACIJU 
+cl_data.info()   # GLEADAM TIP SVIH PROM 
+# Promenljiva in_spotify_charts je tipa object, a treba da bude broj 
+
+cl_data.describe()   
+# instrumentalness uglavnom sadrži nule (sve do 75 kvartila) --> IZBACUJEMO 
+# i   released_year NAM ISTO NE TREBA, NEVAZNO JE 
+
+
+# mode - nije numerička, već kategorijska promenljiva. Pošto ima samo dve vrednosti (Major i Minor)
+# transformisaćemo je u binarnu (numeričku) varijablu mapiranjem u sledećem koraku (npr. 0 - Major,
+# 1 - Minor) i upotrebićemo je u klasterizaciji - nećemo je izbaciti.
+
+cl_data.drop(columns = ["track_name", "instrumentalness"], inplace = True)
+
+# SREDJUJEMO NA VREDNOSTI ::: 
+cl_data["in_spotify_charts"] = pd.to_numeric(cl_data["in_spotify_charts"], errors='coerce')
+
+cl_data.info()  # GLEDAM DA LI SAM USPESNO PREBACILA U NUMERIC
+
+cl_data["mode"] = cl_data["mode"].map({'Major': 0, 'Minor': 1})
+cl_data.info()  # GLEDAM DA LI SAM JE USPESNO MAPIRALA 
+
+print(cl_data.isna().sum())   # PO KOLONAMA GLEDAM NA VREDNOSTI 
+cl_data.describe()
+
+# 2 VARIJABLE IMAJU PO 2 NA VREDNOSTI, PA IH IZBACUJEM 
+cl_data.dropna(inplace = True)
+print(cl_data.isna().sum())  # PROVERA NAKON IZBACIVANJA 
+cl_data.info()
+
+# MATRICA KORELACIJE 
+import seaborn as sb
+
+plt.figure(figsize=(8,6))
+sb.heatmap(cl_data.corr(), cmap="Reds",annot=True)  # Blues 
+plt.show()
+
+# TRI PROMENLJIVE SU MI VISOKO KORELISANE MEDJUSOBNO, PA (bilo koje) 2 IZBACUJEM: 
+cl_data.drop(columns = ["in_apple_playlists", "streams"], inplace = True)
+cl_data
+
+# AUTLAJERIII: 
+# Ako IMA puno outlier-a (preko 10%) - izbacujemo celu kolonu
+# Ako NEMA puno outlier-a -  winsorize 
+
+def draw_boxplot(podaci, naslov):      # FJA KOJA CRTA I PRIKAZUJE BOXPLOT
+    plt.boxplot(podaci)
+    plt.xlabel(naslov)
+    plt.show()
+
+
+from scipy.stats.mstats import winsorize
+
+#Tražimo sad redom outliere,  redom po kolonama: 
+cl_data.columns
+
+# PRVA:  "in_spotify_playlists"
+draw_boxplot(cl_data["in_spotify_playlists"], "in_spotify_playlists")
+
+# ima outliere samo na gornjoj granici, winsorize u rasponu 0 - 90 ne otklanja sve outlier-e
+winsorized_data = winsorize(cl_data["in_spotify_playlists"], limits=[0.00, 0.10])
+draw_boxplot(winsorized_data, "Winsorized in_spotify_playlists")
+plt.show()
+
+#Zaključak je da više od 10% vrednosti ove promenljive čine outlier-i i treba je izbaciti iz dataset-a
+cl_data.drop(columns = ["in_spotify_playlists"], inplace = True)
+
+# Gledam da li je iznad ili ispod i na osnovu toga pisem 0.10 ili 0.00 
+# I ako mi NE NESTANU SA 0.10 —> izbacujem jer to znaci da ih ima preko 10% 
+# A ako nestanu, onda logicno smanjujem jer je bolje da bude sto manje
+
+# .......... sve trenutno postojece kolone predjem 
+# OVAKO IZBACUJEM:  cl_data.drop(columns = ["in_apple_charts"], inplace = True)
+
+
+cl_data.describe()
+cl_data.columns
+cl_data.info()
+
+# SKALIRANJE (NORMALIZACIJA NA SKALU 0-1) 
+from sklearn.preprocessing import MinMaxScaler
+temp_data = MinMaxScaler().fit_transform(cl_data)         # Koristimo MinMaxScaler koji vraća numpy array koji pretvaramo nazad u DataFrame
+cl_data_scaled = pd.DataFrame(temp_data, columns = cl_data.columns)
+
+cl_data_scaled.describe()   # PROVERAVAMO DA LI JE SVE OK SKALIRANO 
+
+# do ovde je isto za kmeans i hijerarh. 
+
+# ELBOW METODA 
+#Primena elbow metode
+wcss = []
+
+for i in range(1, 11):      # od 1 do 10 klastera
+    kmeans = cluster.KMeans(n_clusters=i, init='k-means++', max_iter=100, n_init=1000, random_state=0).fit(cl_data_scaled)
+    wcss.append(kmeans.inertia_)
+
+plt.plot(range(1, 11), wcss)            # CRTAMO GRAFIK, TRAZIMO "LAKAT"
+plt.xlabel("Broj klastera (K)")
+plt.ylabel("WCSS greška")
+plt.show()
+
+wcss
+# "Lakat" se pojavljuje kod |2| klastera i kod |4| klastera (drugi "lakat").
+
+
+# RADIMO KLASTERIZACIJU ZA NAJBOLJU VREDNOST ZA K  
+
+# Radimo KMeans klasterizaciju sa dva klastera i kmeans++ metodom za inicijalizaciju težišta
+kmeans = cluster.KMeans(n_clusters=2, init='k-means++', max_iter=100, n_init=1000, random_state=0)    # ZA 2 KLASTERA
+kmeans.fit(cl_data_scaled)
+
+cl_data_scaled["cluster"] = kmeans.labels_  # dodajemo novu kolonu u dataset 
+cl_data_scaled
+
+# CRTAMO I UPOREDNE BOXPLOTOVE ZA 2 KLASTERA ZBOG UPOREDJIVANJA  
+fig, ax = plt.subplots(1,2)
+
+ax[0].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==0].drop(columns = "cluster"), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0].set_xlabel("Klaster 1")
+
+ax[1].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==1].drop(columns = "cluster"), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1].set_xlabel("Klaster 2")
+
+plt.show()
+
+print("PRVI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==0, "cluster"].count())
+print("DRUGI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==1, "cluster"].count())
+
+# TUMACENJE:::: 
+# VELICINA KLASTERA - 
+# CENTRI KLASTERA - 
+# DISPERZIJA OD CENTARA - 
+
+
+# AKO JE VELIKA KLAST. SA 2 KLASTERA, ONDA PROBAM SA K=4 
+
+# RADIMO PONOVO KLASTERIZACIJU NAD ISTIM DF, PA IZBACUJEMO KOLONU cluster DA NE OMETA 
+cl_data_scaled.drop(columns = ["cluster"], inplace=True)
+
+kmeans = cluster.KMeans(n_clusters=4, init='k-means++', max_iter=100, n_init=1000, random_state=0)
+kmeans.fit(cl_data_scaled)
+
+cl_data_scaled["cluster"] = kmeans.labels_       # PONOVO ISTO RADIMO, DODAJEMO KOLONU "cluster"
+
+# CRTAMO PONOVO KAO GORE ZA K=2 KLASTERA 
+fig, ax = plt.subplots(2,2)
+
+# U novijoj verziji matplotlib-a se umesto labels koristi tick_labels
+ax[0,0].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==0].drop(columns = ['cluster']), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0,0].set_xlabel("Klaster 1")
+
+ax[0,1].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==1].drop(columns = ['cluster']), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0,1].set_xlabel("Klaster 2")
+
+ax[1,0].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==2].drop(columns = ['cluster']), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1,0].set_xlabel("Klaster 3")
+
+ax[1,1].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==3].drop(columns = ['cluster']), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1,1].set_xlabel("Klaster 4")
+
+plt.show()
+
+print("PRVI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==0, "cluster"].count())
+print("DRUGI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==1, "cluster"].count())
+print("TRECI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==2, "cluster"].count())
+print("CETVRTI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==3, "cluster"].count())
+
+
+
+
+# ============================================================================================================================================================================
+
+
+6. HIJERARHIJSKA: 
+
+
+# POTREBNI IMPORTI 
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import sklearn.cluster as cluster
+
+# UCITAVAM DATASET 
+data = pd.read_csv('./data/spotify.csv')
+
+# PRAVIM TRAZENI PODSKUP 
+cl_data = data[data["speechiness"] <= 60].copy()
+
+# GLEDAM SVE PODATKE 
+cl_data
+
+
+# BIRAMO PROMENLJIVE ZA KLASTERIZACIJU 
+cl_data.info()   # GLEADAM TIP SVIH PROM 
+# Promenljiva in_spotify_charts je tipa object, a treba da bude broj 
+
+cl_data.describe()   
+# instrumentalness uglavnom sadrži nule (sve do 75 kvartila) --> IZBACUJEMO 
+# i   released_year NAM ISTO NE TREBA, NEVAZNO JE 
+
+
+# mode - nije numerička, već kategorijska promenljiva. Pošto ima samo dve vrednosti (Major i Minor)
+# transformisaćemo je u binarnu (numeričku) varijablu mapiranjem u sledećem koraku (npr. 0 - Major,
+# 1 - Minor) i upotrebićemo je u klasterizaciji - nećemo je izbaciti.
+
+cl_data.drop(columns = ["track_name", "instrumentalness"], inplace = True)
+
+# SREDJUJEMO NA VREDNOSTI ::: 
+cl_data["in_spotify_charts"] = pd.to_numeric(cl_data["in_spotify_charts"], errors='coerce')
+
+cl_data.info()  # GLEDAM DA LI SAM USPESNO PREBACILA U NUMERIC
+
+cl_data["mode"] = cl_data["mode"].map({'Major': 0, 'Minor': 1})
+cl_data.info()  # GLEDAM DA LI SAM JE USPESNO MAPIRALA 
+
+print(cl_data.isna().sum())   # PO KOLONAMA GLEDAM NA VREDNOSTI 
+cl_data.describe()
+
+# 2 VARIJABLE IMAJU PO 2 NA VREDNOSTI, PA IH IZBACUJEM 
+cl_data.dropna(inplace = True)
+print(cl_data.isna().sum())  # PROVERA NAKON IZBACIVANJA 
+cl_data.info()
+
+# MATRICA KORELACIJE 
+import seaborn as sb
+
+plt.figure(figsize=(8,6))
+sb.heatmap(cl_data.corr(), cmap="Reds",annot=True)  # Blues 
+plt.show()
+
+# TRI PROMENLJIVE SU MI VISOKO KORELISANE MEDJUSOBNO, PA (bilo koje) 2 IZBACUJEM: 
+cl_data.drop(columns = ["in_apple_playlists", "streams"], inplace = True)
+cl_data
+
+# AUTLAJERIII: 
+# Ako IMA puno outlier-a (preko 10%) - izbacujemo celu kolonu
+# Ako NEMA puno outlier-a -  winsorize 
+
+def draw_boxplot(podaci, naslov):      # FJA KOJA CRTA I PRIKAZUJE BOXPLOT
+    plt.boxplot(podaci)
+    plt.xlabel(naslov)
+    plt.show()
+
+
+from scipy.stats.mstats import winsorize
+
+#Tražimo sad redom outliere,  redom po kolonama: 
+cl_data.columns
+
+# PRVA:  "in_spotify_playlists"
+draw_boxplot(cl_data["in_spotify_playlists"], "in_spotify_playlists")
+
+# ima outliere samo na gornjoj granici, winsorize u rasponu 0 - 90 ne otklanja sve outlier-e
+winsorized_data = winsorize(cl_data["in_spotify_playlists"], limits=[0.00, 0.10])
+draw_boxplot(winsorized_data, "Winsorized in_spotify_playlists")
+plt.show()
+
+#Zaključak je da više od 10% vrednosti ove promenljive čine outlier-i i treba je izbaciti iz dataset-a
+cl_data.drop(columns = ["in_spotify_playlists"], inplace = True)
+
+# Gledam da li je iznad ili ispod i na osnovu toga pisem 0.10 ili 0.00 
+# I ako mi NE NESTANU SA 0.10 —> izbacujem jer to znaci da ih ima preko 10% 
+# A ako nestanu, onda logicno smanjujem jer je bolje da bude sto manje
+
+# .......... sve trenutno postojece kolone predjem 
+# OVAKO IZBACUJEM:  cl_data.drop(columns = ["in_apple_charts"], inplace = True)
+
+
+cl_data.describe()
+cl_data.columns
+cl_data.info()
+
+# SKALIRANJE (NORMALIZACIJA NA SKALU 0-1) 
+from sklearn.preprocessing import MinMaxScaler
+temp_data = MinMaxScaler().fit_transform(cl_data)         # Koristimo MinMaxScaler koji vraća numpy array koji pretvaramo nazad u DataFrame
+cl_data_scaled = pd.DataFrame(temp_data, columns = cl_data.columns)
+
+cl_data_scaled.describe()   # PROVERAVAMO DA LI JE SVE OK SKALIRANO 
+
+# do ovde je isto za kmeans i hijerarh. 
+
+
+# PREKO DENDROGRAMA TRAZIMO NAJBOLJU VREDNOST ZA BROJ KLASTERA K I LINKAGE METODU 
+from scipy.cluster.hierarchy import linkage, dendrogram
+
+# Dendrogram za razlivite linkage metode
+dendrogram(linkage(cl_data_scaled, method='ward', metric='euclidean'))
+plt.title("Ward linkage dendrogram")
+plt.show()
+
+dendrogram(linkage(cl_data_scaled, method='single', metric='euclidean'))
+plt.title("Single linkage dendrogram")
+plt.show()
+
+dendrogram(linkage(cl_data_scaled, method='complete', metric='euclidean'))
+plt.title("Complete linkage dendrogram")
+plt.show()
+
+dendrogram(linkage(cl_data_scaled, method='average', metric='euclidean'))
+plt.title("Average linkage dendrogram")
+plt.show()
+
+# AKO IZABEREM: 
+# COMPLETE ILI AVERAGE LINKADE METODE --> dobija se po 4 klastera koji su dosta bliski jedan drugom (visine na dendrogramu nisu mnogo velike). 
+# SINGLE I WARD --> dobijaju se po dva odvojena klastera,
+# WARD --> moze podela na 4 klastera (razlika u visini između 2 i 4 klastera nije velika). 
+# Najprakticniji je WARD 
+
+# RADIMO HIJEJR. KLAST. SA 2 KLASTERA SA WARD METODOM // euklidska udaljenost
+h_cluster = cluster.AgglomerativeClustering(n_clusters=2, linkage = "ward", metric="euclidean").fit(cl_data_scaled)
+cl_data_scaled["cluster"] = h_cluster.labels_    # DODAJEMO OVU KOLONU U DATASET 
+
+cl_data_scaled   # DA ISPISEM 
+
+
+# CRTAM I UPOREDNE BOXPLOTOVE ZA 2 KLASTERA DA IH UPOREDIM 
+fig, ax = plt.subplots(1,2)
+
+ax[0].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==0].drop(columns = ["cluster"]), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0].set_xlabel("Klaster 1")
+ax[1].boxplot(cl_data_scaled[cl_data_scaled["cluster"]==1].drop(columns = ["cluster"]), labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1].set_xlabel("Klaster 2")
+
+plt.show()
+
+print("PRVI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==0, "cluster"].count())
+print("DRUGI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"]==1, "cluster"].count())
+
+# RADIM PONOVO KLASTERIZACIJU ALI SAD SA 4 KLASTERA, ZA K=4, NAD ISTIM DF --> PA IZBACUJEMO KOLONU cluster DA NE OMETA 
+cl_data_scaled.drop(columns = ["cluster"], inplace=True)
+
+# Radimo hijerarhijsku klasterizaciju sa četiri klastera i Ward linkage metodom, euklidska udaljenost
+h_cluster = cluster.AgglomerativeClustering(n_clusters=4, linkage = "ward", metric="euclidean").fit(cl_data_scaled)
+
+cl_data_scaled["cluster"] = h_cluster.labels_     # DODAJEM NOVU KOLONU
+cl_data_scaled
+
+fig, ax = plt.subplots(2, 2)
+
+ax[0, 0].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 0].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0, 0].set_xlabel("Klaster 1")
+
+ax[0, 1].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 1].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[0, 1].set_xlabel("Klaster 2")
+
+ax[1, 0].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 2].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1, 0].set_xlabel("Klaster 3")
+
+ax[1, 1].boxplot(cl_data_scaled[cl_data_scaled["cluster"] == 3].drop(columns=['cluster']),
+                 labels=("sc", "bpm", "mod", "enr", "liv"))
+ax[1, 1].set_xlabel("Klaster 4")
+
+plt.show()
+
+print("PRVI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 0, "cluster"].count())
+print("DRUGI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 1, "cluster"].count())
+print("TRECI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 2, "cluster"].count())
+print("CETVRTI KLASTER, N = ", cl_data_scaled.loc[cl_data_scaled["cluster"] == 3, "cluster"].count())
+
+
+# ============================================================================================================================================================================
